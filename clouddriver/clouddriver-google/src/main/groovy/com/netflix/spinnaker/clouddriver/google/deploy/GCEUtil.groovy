@@ -62,6 +62,9 @@ class GCEUtil {
   private static final String DISK_TYPE_PERSISTENT = "PERSISTENT"
   private static final String DISK_TYPE_SCRATCH = "SCRATCH"
   private static final String GCE_API_PREFIX = "https://compute.googleapis.com/compute/v1/projects/"
+  // The "//" prefix (not "https://") matches the GCP certificateMap URL format expected by the
+  // Compute API on TargetHttpsProxy resources. This is intentional per GCP documentation.
+  private static final String CERTIFICATE_MANAGER_API_PREFIX = "//certificatemanager.googleapis.com/projects/"
   private static final List<Integer> RETRY_ERROR_CODES = [400, 403, 412, 429, 503]
 
   public static final String TARGET_POOL_NAME_PREFIX = "tp"
@@ -633,7 +636,7 @@ class GCEUtil {
 
     def networkInterface = instanceTemplateProperties.networkInterfaces[0]
     def serviceAccountEmail = instanceTemplateProperties.serviceAccounts?.getAt(0)?.email
-    def shieldedVmConfig = instanceTemplateProperties.shieldedVmConfig
+    def shieldedVmConfig = instanceTemplateProperties.shieldedInstanceConfig
 
     return new BaseGoogleInstanceDescription(
       image: image,
@@ -685,6 +688,11 @@ class GCEUtil {
 
   static String buildRegionalCertificateUrl(String projectName, String region, String certName) {
     return GCE_API_PREFIX + "$projectName/regions/$region/sslCertificates/$certName"
+  }
+
+  static String buildCertificateMapUrl(String projectName, String mapName) {
+    // Certificate Manager maps are attached to target HTTPS proxies via the global location.
+    return CERTIFICATE_MANAGER_API_PREFIX + "$projectName/locations/global/certificateMaps/$mapName"
   }
 
   static String buildHttpHealthCheckUrl(String projectName, String healthCheckName) {
@@ -939,22 +947,25 @@ class GCEUtil {
     return scheduling
   }
 
-  static ShieldedVmConfig buildShieldedVmConfig(BaseGoogleInstanceDescription description) {
-    def shieldedVmConfig = new ShieldedVmConfig()
+  // Builds the v1 ShieldedInstanceConfig (replaces beta ShieldedVmConfig).
+  // See: https://cloud.google.com/compute/docs/reference/rest/v1/instances/insert
+  //      (shieldedInstanceConfig on InstanceProperties)
+  static ShieldedInstanceConfig buildShieldedInstanceConfig(BaseGoogleInstanceDescription description) {
+    def shieldedInstanceConfig = new ShieldedInstanceConfig()
 
     if (description.enableSecureBoot != null) {
-      shieldedVmConfig.enableSecureBoot = description.enableSecureBoot
+      shieldedInstanceConfig.enableSecureBoot = description.enableSecureBoot
     }
 
     if (description.enableVtpm != null) {
-      shieldedVmConfig.enableVtpm = description.enableVtpm
+      shieldedInstanceConfig.enableVtpm = description.enableVtpm
     }
 
     if (description.enableIntegrityMonitoring != null) {
-      shieldedVmConfig.enableIntegrityMonitoring = description.enableIntegrityMonitoring
+      shieldedInstanceConfig.enableIntegrityMonitoring = description.enableIntegrityMonitoring
     }
 
-    return shieldedVmConfig
+    return shieldedInstanceConfig
   }
 
   static void updateStatusAndThrowNotFoundException(String errorMsg, Task task, String phase) {
@@ -962,6 +973,10 @@ class GCEUtil {
     throw new GoogleResourceNotFoundException(errorMsg)
   }
 
+  // Extracts the trailing resource name from a full GCP URL. Works for both Compute API URLs
+  // (https://compute.googleapis.com/compute/v1/projects/…) and Certificate Manager URLs
+  // (//certificatemanager.googleapis.com/projects/…/certificateMaps/my-map) because both
+  // place the resource name as the final path segment.
   public static String getLocalName(String fullUrl) {
     if (!fullUrl) {
       return fullUrl
